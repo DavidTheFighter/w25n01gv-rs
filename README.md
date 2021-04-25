@@ -1,1 +1,2 @@
 # w25n01gv-rs
+Implements a Quad-SPI (QSPI) driver for Winbond W25N01GV flash chips. Because there are no embedded-hal traits for QSPI, for now I've directly added a dependency to the stm32l4xx-hal library that I'll personally be using to interface with the flash chips. I may write a temporary QSPI trait in the future, and ideally I'll shift the library to use any QSPI traits from embedded-hal when (if) they come out.
