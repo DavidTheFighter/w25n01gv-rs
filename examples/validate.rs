@@ -18,7 +18,10 @@ use hal::{
 use crate::hal::prelude::*;
 use crate::rt::entry;
 use crate::rt::ExceptionFrame;
-use w25n01gv_rs::{new_w25_n01_gv, ReadMethod, WriteMethod, PAGE_SIZE_WITH_ECC_BYTES};
+use w25n01gv_rs::{
+    new_w25_n01_gv, ReadMethod, WriteMethod, PAGES_PER_BLOCK, PAGE_SIZE_BYTES,
+    PAGE_SIZE_WITH_ECC_BYTES,
+};
 
 use core::panic::PanicInfo;
 
@@ -63,62 +66,61 @@ fn main() -> ! {
         QspiConfig::default()
             .flash_size(29)
             .address_size(AddressSize::Addr16Bit)
-            .clock_prescaler(3),
+            .clock_prescaler(1),
     );
 
     let mut flash_chip = new_w25_n01_gv(quadspi);
-
-    let id = flash_chip.get_jedec_id().unwrap();
-    hprintln!("JEDEC Values: {}, {}, {}", id[0], id[1], id[2]).unwrap();
-
     flash_chip
         .set_write_protection(false, false, false, false, false)
         .unwrap();
     flash_chip.set_continuous_read_mode(false).unwrap();
 
-    let flash_chip = flash_chip.into_write_mode().unwrap();
-    let flash_chip = flash_chip.erase_128kb_block(0).unwrap();
-    flash_chip.wait_while_busy();
-
-    let buffer = [0, 1, 2, 3, 42];
-    hprintln!(
-        "Writing bytes: {} {} {} {} {}",
-        buffer[0],
-        buffer[1],
-        buffer[2],
-        buffer[3],
-        buffer[4]
-    )
-    .unwrap();
-
-    let flash_chip = flash_chip.into_write_mode().unwrap();
-    flash_chip
-        .load_to_data_buffer(&buffer, 0, WriteMethod::SingleLoad)
-        .unwrap();
-
-    let flash_chip = flash_chip.write_data_buffer_to_memory(0).unwrap();
-    flash_chip.wait_while_busy();
-
-    flash_chip.read_memory_to_data_buffer(0).unwrap();
-    let mut buffer = [0_u8; PAGE_SIZE_WITH_ECC_BYTES];
-
-    flash_chip.wait_while_busy();
-    flash_chip
-        .read_data_buffer(&mut buffer, ReadMethod::FastRead)
-        .unwrap();
-
-    hprintln!(
-        "Read back bytes: {} {} {} {} {}",
-        buffer[0],
-        buffer[1],
-        buffer[2],
-        buffer[3],
-        buffer[4]
-    )
-    .unwrap();
+    let mut buffer = [0_u8; PAGE_SIZE_BYTES];
+    for (i, elem) in buffer.iter_mut().enumerate() {
+        *elem = (i & 0xFF) as u8;
+    }
 
     loop {
-        continue;
+        hprintln!("Start new block test").unwrap();
+
+        let write_flash_chip = flash_chip.into_write_mode().unwrap();
+        flash_chip = write_flash_chip.erase_128kb_block(0).unwrap();
+        flash_chip.wait_while_busy();
+
+        for page_index in 0..PAGES_PER_BLOCK as u16 {
+            let write_flash_chip = flash_chip.into_write_mode().unwrap();
+            write_flash_chip
+                .load_to_data_buffer(&buffer, 0, WriteMethod::QuadLoad)
+                .unwrap();
+            flash_chip = write_flash_chip
+                .write_data_buffer_to_memory(page_index)
+                .unwrap();
+            flash_chip.wait_while_busy();
+
+            flash_chip.read_memory_to_data_buffer(page_index).unwrap();
+            flash_chip.wait_while_busy();
+            let mut read_buffer = [0_u8; PAGE_SIZE_WITH_ECC_BYTES];
+            flash_chip
+                .read_data_buffer(&mut read_buffer, ReadMethod::FastReadQuadIO)
+                .unwrap();
+
+            for (index, (truth, read)) in buffer.iter().zip(read_buffer.iter()).enumerate() {
+                if truth != read {
+                    hprintln!(
+                        "Read back a byte incorrectly! Got {} wanted {} ({}, {})",
+                        read,
+                        truth,
+                        page_index,
+                        index
+                    )
+                    .unwrap();
+                }
+            }
+
+            for elem in buffer.iter_mut() {
+                (*elem) = elem.wrapping_add(1);
+            }
+        }
     }
 }
 

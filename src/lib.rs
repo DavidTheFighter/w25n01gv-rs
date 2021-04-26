@@ -1,5 +1,5 @@
 #![no_std]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 extern crate embedded_hal as hal;
 use core::marker::PhantomData;
@@ -10,9 +10,13 @@ pub mod read;
 pub mod status;
 pub mod write;
 
+pub use read::ReadMethod;
+pub use write::WriteMethod;
+
 pub const PAGE_SIZE_BYTES: usize = 2048;
 pub const PAGE_SIZE_WITH_ECC_BYTES: usize = 2112;
 pub const MAX_BBM_LUT_ENTIRES: usize = 20;
+pub const PAGES_PER_BLOCK: usize = 64;
 
 enum FlashCommands {
     DeviceReset = 0xFF,
@@ -22,15 +26,9 @@ enum FlashCommands {
     EnableWrite = 0x06,
     DisableWrite = 0x04,
     Erase128KBBlock = 0xD8,
-    LoadProgramData = 0x02,
-    RandomLoadProgramData = 0x84,
-    QuadLoadProgramData = 0x32,
-    QuadRandomLoadProgramData = 0x34,
     ReadBBM = 0xA5,
     ProgramExecute = 0x10,
     PageDataRead = 0x13,
-    FastRead = 0x0B,
-    QuadFastRead = 0x6B,
 }
 
 #[derive(Debug)]
@@ -39,7 +37,6 @@ pub enum FlashCommandError {
     QSPIAddress,
     QSPIUnknown,
     DeviceBusy,
-    WriteFailure,
 }
 
 impl FlashCommandError {
@@ -138,7 +135,19 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3, MODE> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3)
         }
     }
 
-    pub fn check_busy(&self) -> Result<bool, FlashCommandError> {
+    pub fn check_write_or_erase_failure(&self) -> Result<bool, FlashCommandError> {
+        match self.read_status_register() {
+            Ok(status_register) => {
+                Ok(status_register.erase_failure || status_register.write_failure)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// An internal method every function that sends a command (minus a special few) uses to
+    /// check if the flash device is busy. The flash device will silently reject commands while
+    /// busy.
+    fn check_busy(&self) -> Result<bool, FlashCommandError> {
         match self.read_status_register() {
             Ok(status_register) => Ok(status_register.device_busy),
             Err(err) => Err(err),

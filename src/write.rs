@@ -4,6 +4,33 @@ use stm32l4xx_hal::qspi::{QspiMode, QspiWriteCommand};
 
 use crate::{FlashCommandError, FlashCommands, ReadMode, WriteMode, W25N01GV};
 
+#[derive(Debug, Clone, Copy)]
+pub enum WriteMethod {
+    SingleLoad = 0x02,
+    RandomSingleLoad = 0x84,
+    QuadLoad = 0x32,
+    RandomQuadLoad = 0x34,
+}
+
+impl WriteMethod {
+    fn dummy_cycles(&self) -> u8 {
+        0
+    }
+
+    fn address_mode(&self) -> QspiMode {
+        QspiMode::SingleChannel
+    }
+
+    fn data_mode(&self) -> QspiMode {
+        match self {
+            WriteMethod::SingleLoad => QspiMode::SingleChannel,
+            WriteMethod::RandomSingleLoad => QspiMode::SingleChannel,
+            WriteMethod::QuadLoad => QspiMode::QuadChannel,
+            WriteMethod::RandomQuadLoad => QspiMode::QuadChannel,
+        }
+    }
+}
+
 impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), ReadMode> {
     pub fn into_write_mode(
         self,
@@ -84,7 +111,7 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
             Err(err) => return Err(err),
         }
 
-        let bytes = page_address.to_le_bytes();
+        let bytes = page_address.to_be_bytes();
 
         let command = QspiWriteCommand {
             instruction: Some((
@@ -101,12 +128,6 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
         if let Err(err) = self.qspi.write(command) {
             Err(FlashCommandError::from_qspi_error(err))
         } else {
-            if let Ok(register) = self.read_status_register() {
-                if register.erase_failure {
-                    return Err(FlashCommandError::WriteFailure);
-                }
-            }
-
             Ok(W25N01GV {
                 _marker: PhantomData {},
                 qspi: self.qspi,
@@ -114,11 +135,11 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
         }
     }
 
-    pub fn quad_load_to_data_buffer(
+    pub fn load_to_data_buffer(
         &self,
         bytes: &[u8],
         starting_address: u16,
-        clear_unwritten_bytes: bool,
+        write_method: WriteMethod,
     ) -> Result<(), FlashCommandError> {
         match self.check_busy() {
             Ok(busy) => {
@@ -130,56 +151,11 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
         }
 
         let command = QspiWriteCommand {
-            instruction: Some((
-                if clear_unwritten_bytes {
-                    FlashCommands::QuadLoadProgramData
-                } else {
-                    FlashCommands::QuadRandomLoadProgramData
-                } as u8,
-                QspiMode::SingleChannel,
-            )),
-            address: Some((starting_address as u32, QspiMode::SingleChannel)),
+            instruction: Some((write_method as u8, write_method.address_mode())),
+            address: Some((starting_address.to_be() as u32, QspiMode::SingleChannel)),
             alternative_bytes: None,
-            dummy_cycles: 0,
-            data: Some((bytes, QspiMode::QuadChannel)),
-            double_data_rate: false,
-        };
-
-        if let Err(err) = self.qspi.write(command) {
-            Err(FlashCommandError::from_qspi_error(err))
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn single_load_to_data_buffer(
-        &self,
-        bytes: &[u8],
-        starting_address: u16,
-        clear_unwritten_bytes: bool,
-    ) -> Result<(), FlashCommandError> {
-        match self.check_busy() {
-            Ok(busy) => {
-                if busy {
-                    return Err(FlashCommandError::DeviceBusy);
-                }
-            }
-            Err(err) => return Err(err),
-        }
-
-        let command = QspiWriteCommand {
-            instruction: Some((
-                if clear_unwritten_bytes {
-                    FlashCommands::LoadProgramData
-                } else {
-                    FlashCommands::RandomLoadProgramData
-                } as u8,
-                QspiMode::SingleChannel,
-            )),
-            address: Some((starting_address as u32, QspiMode::SingleChannel)),
-            alternative_bytes: None,
-            dummy_cycles: 0,
-            data: Some((bytes, QspiMode::SingleChannel)),
+            dummy_cycles: write_method.dummy_cycles(),
+            data: Some((bytes, write_method.data_mode())),
             double_data_rate: false,
         };
 
@@ -203,7 +179,7 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
             Err(err) => return Err(err),
         }
 
-        let bytes = page_address.to_le_bytes();
+        let bytes = page_address.to_be_bytes();
 
         let command = QspiWriteCommand {
             instruction: Some((FlashCommands::ProgramExecute as u8, QspiMode::SingleChannel)),
@@ -217,12 +193,6 @@ impl<CLK, NCS, IO0, IO1, IO2, IO3> W25N01GV<(CLK, NCS, IO0, IO1, IO2, IO3), Writ
         if let Err(err) = self.qspi.write(command) {
             Err(FlashCommandError::from_qspi_error(err))
         } else {
-            if let Ok(register) = self.read_status_register() {
-                if register.erase_failure {
-                    return Err(FlashCommandError::WriteFailure);
-                }
-            }
-
             Ok(W25N01GV {
                 _marker: PhantomData {},
                 qspi: self.qspi,
